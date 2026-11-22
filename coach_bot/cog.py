@@ -14,7 +14,11 @@ from .ea_client import EAClient
 from .limits import Limiter, human
 from .store import Store
 
-CLUB_ID = os.getenv("CLUB_ID", "2085946")
+CLUB_ID = os.getenv("CLUB_ID", "").strip()
+if not CLUB_ID:
+    raise RuntimeError(
+        "CLUB_ID is not set. Set it to MRFC Academy's EA club ID (see .env.example)."
+    )
 PLATFORM = os.getenv("PLATFORM", "common-gen5")
 TEAM_WINDOW = 24 * 3600          # /coach: once per 24h (team-wide)
 PLAYER_WINDOW = 7 * 24 * 3600    # /coachplayer: once per week per player
