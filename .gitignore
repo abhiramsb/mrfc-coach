@@ -1,0 +1,8 @@
+.env
+*.env
+!.env.example
+coach_state.json
+coach_state.json.tmp
+__pycache__/
+*.pyc
+.venv/
