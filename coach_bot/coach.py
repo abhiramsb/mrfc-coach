@@ -1,8 +1,23 @@
-"""Generate coaching text from summarised stats using Claude."""
+"""Generate coaching text from summarised stats using a configurable LLM.
+
+Provider is chosen with LLM_PROVIDER: gemini (default, free tier), groq,
+openrouter, or anthropic (paid Claude API). All but anthropic use an
+OpenAI-compatible chat endpoint.
+"""
+import asyncio
 import json
 import os
 
-import anthropic
+import aiohttp
+
+PROVIDERS = {
+    # name: (base_url, default_model)
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai",
+               "gemini-3.5-flash"),
+    "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-120b"),
+    "openrouter": ("https://openrouter.ai/api/v1",
+                   "google/gemma-4-31b-it:free"),
+}
 
 SYSTEM = """You are the assistant coach of an EA FC Pro Clubs team (MRFC Academy, a
 friendly Indian/South-Asian squad playing in a low division). You get JSON stats.
@@ -37,18 +52,62 @@ Small samples (<4 games) must be flagged as uncertain. Never invent stats."""
 
 class Coach:
     def __init__(self):
-        self.client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY
-        self.model = os.getenv("COACH_MODEL", "claude-sonnet-5-5")
+        self.provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+        if self.provider == "anthropic":
+            import anthropic  # only needed for the paid Claude option
+            self.client = anthropic.AsyncAnthropic(
+                api_key=os.getenv("LLM_API_KEY") or os.getenv("ANTHROPIC_API_KEY"))
+            self.model = (os.getenv("LLM_MODEL") or os.getenv("COACH_MODEL")
+                          or "claude-sonnet-5-5")
+        elif self.provider in PROVIDERS:
+            base, default_model = PROVIDERS[self.provider]
+            self.base_url = (os.getenv("LLM_BASE_URL") or base).rstrip("/")
+            self.model = os.getenv("LLM_MODEL") or default_model
+            self.api_key = os.getenv("LLM_API_KEY", "")
+            if not self.api_key:
+                raise RuntimeError("LLM_API_KEY is not set")
+        else:
+            raise RuntimeError(f"Unknown LLM_PROVIDER '{self.provider}'. "
+                               f"Use one of: {', '.join(PROVIDERS)}, anthropic")
+
+    async def _chat(self, user, max_tokens):
+        if self.provider == "anthropic":
+            msg = await self.client.messages.create(
+                model=self.model, max_tokens=max_tokens, system=SYSTEM,
+                messages=[{"role": "user", "content": user}])
+            return msg.content[0].text
+        body = {"model": self.model,
+                # headroom: some free models spend tokens on hidden reasoning
+                "max_tokens": max_tokens * 2,
+                "messages": [{"role": "system", "content": SYSTEM},
+                             {"role": "user", "content": user}]}
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        url = f"{self.base_url}/chat/completions"
+        last = None
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=90)) as http:
+            for attempt in range(3):
+                async with http.post(url, json=body, headers=headers) as r:
+                    if r.status in (429, 500, 502, 503):
+                        last = f"{r.status} from {self.provider}"
+                        await asyncio.sleep(5 * (attempt + 1))
+                        continue
+                    data = await r.json(content_type=None)
+                    if r.status != 200:
+                        raise RuntimeError(
+                            f"{self.provider} error {r.status}: "
+                            f"{str(data)[:200]}")
+                    text = (data["choices"][0]["message"].get("content") or "").strip()
+                    if not text:
+                        raise RuntimeError(f"{self.provider} returned empty text")
+                    return text
+        raise RuntimeError(f"{last} (free-tier limit? try again later)")
 
     async def team_report(self, summary, question=None):
         user = "Team stats JSON:\n" + json.dumps(summary, indent=1)[:30000]
         if question:
             user += f"\n\nCaptain's question: {question}"
-        msg = await self.client.messages.create(
-            model=self.model, max_tokens=900, system=SYSTEM,
-            messages=[{"role": "user", "content": user}],
-        )
-        return msg.content[0].text
+        return await self._chat(user, 900)
 
     async def player_report(self, summary, player):
         rows = [r for r in summary["players_in_recent_matches"]
@@ -61,11 +120,8 @@ class Coach:
                    "team": summary["team_last_matches"],
                    "position_spread": summary["position_spread"],
                    "coach_memory": summary.get("coach_memory")}
-        msg = await self.client.messages.create(
-            model=self.model, max_tokens=600, system=SYSTEM,
-            messages=[{"role": "user", "content":
-                       "Coach this one player (strengths, weaknesses, 2 habits "
-                       "to improve WITHIN their current position; never suggest a "
-                       "position change, and note if the team formation could help them):\n" + json.dumps(payload, indent=1)}],
-        )
-        return msg.content[0].text
+        return await self._chat(
+            "Coach this one player (strengths, weaknesses, 2 habits "
+            "to improve WITHIN their current position; never suggest a "
+            "position change, and note if the team formation could help them):\n"
+            + json.dumps(payload, indent=1), 600)
