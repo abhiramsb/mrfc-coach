@@ -26,6 +26,7 @@ TZ = ZoneInfo(os.getenv("COACH_TZ", "Asia/Kolkata"))
 
 
 CAPTAIN_ROLE = os.getenv("CAPTAIN_ROLE", "MRFC Captain")
+SQUAD_ROLE = os.getenv("SQUAD_ROLE", "MRFC Squad")
 
 
 class CoachCog(commands.Cog):
@@ -38,13 +39,13 @@ class CoachCog(commands.Cog):
         self.ready = asyncio.Event()
         self.auto_channel_id = int(os.getenv("COACH_CHANNEL_ID", "0"))
 
-    async def _access(self, interaction):
+    async def _access(self, interaction, allowed_roles):
         """Return (allowed, is_owner). Owner: always allowed, no limits.
-        Everyone else must hold the Captain role and is subject to limits."""
+        Everyone else needs one of allowed_roles and is subject to limits."""
         if await self.bot.is_owner(interaction.user):
             return True, True
         roles = getattr(interaction.user, "roles", [])
-        return any(r.name == CAPTAIN_ROLE for r in roles), False
+        return any(r.name in allowed_roles for r in roles), False
 
     async def cog_load(self):
         self._init_task = asyncio.create_task(self._init())
@@ -83,7 +84,7 @@ class CoachCog(commands.Cog):
                            matches="How many recent matches to analyse (default 15)")
     async def coach_cmd(self, interaction: discord.Interaction,
                         question: str | None = None, matches: int = 15):
-        allowed, owner = await self._access(interaction)
+        allowed, owner = await self._access(interaction, {CAPTAIN_ROLE})
         if not allowed:
             return await interaction.response.send_message(
                 f"Only **{CAPTAIN_ROLE}s** can use this command.", ephemeral=True)
@@ -107,10 +108,10 @@ class CoachCog(commands.Cog):
     @app_commands.command(name="coachplayer", description="Coach one player")
     @app_commands.describe(player="EA gamertag (as shown in the club)")
     async def coach_player(self, interaction: discord.Interaction, player: str):
-        allowed, owner = await self._access(interaction)
+        allowed, owner = await self._access(interaction, {SQUAD_ROLE, CAPTAIN_ROLE})
         if not allowed:
             return await interaction.response.send_message(
-                f"Only **{CAPTAIN_ROLE}s** can use this command.", ephemeral=True)
+                f"Only **{SQUAD_ROLE}** members can use this command.", ephemeral=True)
         await interaction.response.defer(thinking=True)
         await self.ready.wait()
         key = "player:" + player.strip().lower()
