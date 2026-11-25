@@ -25,6 +25,9 @@ PLAYER_WINDOW = 7 * 24 * 3600    # /coachplayer: once per week per player
 TZ = ZoneInfo(os.getenv("COACH_TZ", "Asia/Kolkata"))
 
 
+CAPTAIN_ROLE = os.getenv("CAPTAIN_ROLE", "MRFC Captain")
+
+
 class CoachCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -34,6 +37,14 @@ class CoachCog(commands.Cog):
         self.limits = Limiter(self.store)
         self.ready = asyncio.Event()
         self.auto_channel_id = int(os.getenv("COACH_CHANNEL_ID", "0"))
+
+    async def _access(self, interaction):
+        """Return (allowed, is_owner). Owner: always allowed, no limits.
+        Everyone else must hold the Captain role and is subject to limits."""
+        if await self.bot.is_owner(interaction.user):
+            return True, True
+        roles = getattr(interaction.user, "roles", [])
+        return any(r.name == CAPTAIN_ROLE for r in roles), False
 
     async def cog_load(self):
         self._init_task = asyncio.create_task(self._init())
@@ -72,9 +83,13 @@ class CoachCog(commands.Cog):
                            matches="How many recent matches to analyse (default 15)")
     async def coach_cmd(self, interaction: discord.Interaction,
                         question: str | None = None, matches: int = 15):
+        allowed, owner = await self._access(interaction)
+        if not allowed:
+            return await interaction.response.send_message(
+                f"Only **{CAPTAIN_ROLE}s** can use this command.", ephemeral=True)
         await interaction.response.defer(thinking=True)
         await self.ready.wait()
-        cached, left = self.limits.get("team", TEAM_WINDOW)
+        cached, left = (None, 0) if owner else self.limits.get("team", TEAM_WINDOW)
         if cached:
             return await interaction.followup.send(
                 f"{cached[:1850]}\n\n*Latest team report (limit: once per 24h). "
@@ -85,16 +100,21 @@ class CoachCog(commands.Cog):
             text = await self.coach.team_report(summary, question)
         except Exception as e:
             return await interaction.followup.send(f"Couldn't fetch/coach: `{e}`")
-        await self.limits.put("team", text)
+        if not owner:
+            await self.limits.put("team", text)
         await interaction.followup.send(text[:1990])
 
     @app_commands.command(name="coachplayer", description="Coach one player")
     @app_commands.describe(player="EA gamertag (as shown in the club)")
     async def coach_player(self, interaction: discord.Interaction, player: str):
+        allowed, owner = await self._access(interaction)
+        if not allowed:
+            return await interaction.response.send_message(
+                f"Only **{CAPTAIN_ROLE}s** can use this command.", ephemeral=True)
         await interaction.response.defer(thinking=True)
         await self.ready.wait()
         key = "player:" + player.strip().lower()
-        cached, left = self.limits.get(key, PLAYER_WINDOW)
+        cached, left = (None, 0) if owner else self.limits.get(key, PLAYER_WINDOW)
         if cached:
             return await interaction.followup.send(
                 f"{cached[:1850]}\n\n*Latest report for {player} (limit: once per week "
@@ -107,7 +127,8 @@ class CoachCog(commands.Cog):
             return await interaction.followup.send(f"Couldn't fetch/coach: `{e}`")
         if not text:
             return await interaction.followup.send(f"No data found for `{player}`.")
-        await self.limits.put(key, text)
+        if not owner:
+            await self.limits.put(key, text)
         await interaction.followup.send(text[:1990])
 
     @tasks.loop(time=datetime.time(hour=3, minute=0, tzinfo=TZ))
