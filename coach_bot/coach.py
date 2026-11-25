@@ -77,8 +77,10 @@ class Coach:
                 messages=[{"role": "user", "content": user}])
             return msg.content[0].text
         body = {"model": self.model,
-                # headroom: some free models spend tokens on hidden reasoning
-                "max_tokens": max_tokens * 2,
+                # big headroom: some models (Gemini Flash) spend tokens on
+                # hidden reasoning and would otherwise cut the reply short
+                "max_tokens": max_tokens * 6,
+                "reasoning_effort": os.getenv("LLM_REASONING", "low"),
                 "messages": [{"role": "system", "content": SYSTEM},
                              {"role": "user", "content": user}]}
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -97,7 +99,10 @@ class Coach:
                         raise RuntimeError(
                             f"{self.provider} error {r.status}: "
                             f"{str(data)[:200]}")
-                    text = (data["choices"][0]["message"].get("content") or "").strip()
+                    choice = data["choices"][0]
+                    text = (choice["message"].get("content") or "").strip()
+                    if choice.get("finish_reason") == "length":
+                        text += "\n\n_(reply was cut off by the model's token limit)_"
                     if not text:
                         raise RuntimeError(f"{self.provider} returned empty text")
                     return text
