@@ -41,6 +41,9 @@ class CoachCog(commands.Cog):
     async def _init(self):
         await self.bot.wait_until_ready()
         await self.store.load(self.bot)
+        if os.getenv("CLEAR_CACHE") == "1":  # one-off: reset cooldowns/cached reports
+            self.store.data["cache"] = {}
+            await self.store.save()
         self.ready.set()
         if self.auto_channel_id:
             self.watch.start()

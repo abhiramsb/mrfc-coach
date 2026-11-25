@@ -17,6 +17,8 @@ class Limiter:
         return None, 0
 
     async def put(self, key, text):
+        if "cut off by the model" in text:  # don't lock in a truncated reply
+            return
         self.store.data["cache"][key] = {"ts": time.time(), "text": text}
         await self.store.save()
 
