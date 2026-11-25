@@ -132,6 +132,40 @@ class CoachCog(commands.Cog):
             await self.limits.put(key, text)
         await interaction.followup.send(text[:1990])
 
+    @app_commands.command(name="coachcheck",
+                          description="Owner only: check the coach's channel/LLM setup")
+    async def coach_check(self, interaction: discord.Interaction):
+        if not await self.bot.is_owner(interaction.user):
+            return await interaction.response.send_message(
+                "Owner only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        lines = [f"LLM: `{self.coach.provider}` / `{self.coach.model}`"]
+        for label, var, need in (
+            ("Debrief channel (COACH_CHANNEL_ID)", "COACH_CHANNEL_ID",
+             ("view_channel", "send_messages")),
+            ("Data channel (DATA_CHANNEL_ID)", "DATA_CHANNEL_ID",
+             ("view_channel", "send_messages", "attach_files",
+              "read_message_history")),
+        ):
+            raw = os.getenv(var, "")
+            if not raw.strip().isdigit() or int(raw) == 0:
+                lines.append(f"\u274c **{label}**: not set")
+                continue
+            try:
+                ch = self.bot.get_channel(int(raw)) or await self.bot.fetch_channel(int(raw))
+            except Exception as e:
+                lines.append(f"\u274c **{label}**: can't reach it ({type(e).__name__}) "
+                             f"- wrong ID or bot not in that server/channel")
+                continue
+            perms = ch.permissions_for(ch.guild.me)
+            missing = [n for n in need if not getattr(perms, n)]
+            cat = ch.category.name if getattr(ch, "category", None) else "no category"
+            status = "\u2705" if not missing else "\u26a0\ufe0f"
+            lines.append(f"{status} **{label}**: #{ch.name} ({cat})"
+                         + (f" - missing permissions: {', '.join(missing)}" if missing else ""))
+        lines.append("Data backup loaded: " + ("yes" if self.store.channel else "no (local file only)"))
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
     @tasks.loop(time=datetime.time(hour=3, minute=0, tzinfo=TZ))
     async def watch(self):
         """Once a day, at 3 AM (IST by default): debrief the last 24h."""
