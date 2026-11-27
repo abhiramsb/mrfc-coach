@@ -171,15 +171,36 @@ class CoachCog(commands.Cog):
         """Once a day, at 3 AM (IST by default): debrief the last 24h."""
         ch = self.bot.get_channel(self.auto_channel_id)
         if not ch:
-            return
+            try:
+                ch = await self.bot.fetch_channel(self.auto_channel_id)
+            except Exception as e:
+                print(f"[debrief] cannot reach COACH_CHANNEL_ID: {e}")
+                return
         try:
             summary, matches = await self._summary()
         except Exception as e:
+            print(f"[debrief] stats fetch failed: {e}")
             return await ch.send(f"Daily debrief failed: `{e}`")
         cutoff = time.time() - 24 * 3600
         recent = [m for m in matches if m.get("timestamp", 0) >= cutoff]
         if not recent:
+            print("[debrief] no matches in last 24h, staying quiet")
             return  # nothing played, stay quiet
+        print(f"[debrief] {len(recent)} matches in last 24h, generating")
+        try:
+            await self._debrief(ch, summary, recent)
+        except Exception as e:
+            print(f"[debrief] failed: {e!r}")
+            await ch.send(f"Daily debrief failed: `{e}`")
+
+    @watch.error
+    async def _watch_error(self, error):
+        # never let one bad night kill the daily loop
+        print(f"[debrief] loop error: {error!r}")
+        if not self.watch.is_running():
+            self.watch.restart()
+
+    async def _debrief(self, ch, summary, recent):
         day = summarise(CLUB_ID, recent, {"members": []}, last_n=len(recent))
         day["season_context"] = summary["team_last_matches"]
         day["alltime_member_stats"] = summary["alltime_member_stats"]
